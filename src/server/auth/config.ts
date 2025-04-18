@@ -1,8 +1,9 @@
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { type DefaultSession, type NextAuthConfig } from "next-auth";
-import DiscordProvider from "next-auth/providers/discord";
-
+import CredentialsProvider from "next-auth/providers/credentials";
+import bcrypt from "bcryptjs";
 import { db } from "~/server/db";
+import { SignInSchema } from "~/schemas/SignInSchema";
 
 /**
  * Module augmentation for `next-auth` types. Allows us to add custom properties to the `session`
@@ -32,25 +33,72 @@ declare module "next-auth" {
  */
 export const authConfig = {
   providers: [
-    DiscordProvider,
-    /**
-     * ...add more providers here.
-     *
-     * Most other providers require a bit more work than the Discord provider. For example, the
-     * GitHub provider requires you to add the `refresh_token_expires_in` field to the Account
-     * model. Refer to the NextAuth.js docs for the provider you want to use. Example:
-     *
-     * @see https://next-auth.js.org/providers/github
-     */
-  ],
-  adapter: PrismaAdapter(db),
-  callbacks: {
-    session: ({ session, user }) => ({
-      ...session,
-      user: {
-        ...session.user,
-        id: user.id,
+    CredentialsProvider({
+      name: "Credentials",
+
+      credentials: {
+        identifier: {
+          label: "Username",
+          type: "text",
+          placeholder: "jsmith | jsmith@xyz.com",
+        },
+        password: { label: "Password", type: "password"},
+      },
+      async authorize(credentials, req): Promise<any> {
+        // Add logic here to look up the user from the credentials supplied
+        if (!credentials) {
+          throw new Error("credentials not found");
+        }
+
+        const {identifier,password} =  await SignInSchema.parseAsync(credentials);
+
+
+
+        // const { identifier, password } = credentials as {
+        //   identifier: string;
+        //   password: string;
+        // };
+
+        const user = await db.user.findUnique({
+          where: {
+            email: identifier,
+          },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            password: true,
+          },
+        });
+
+        if (!user) {
+          throw new Error("user not found");
+        }
+
+       
+        const passwordMatch = await bcrypt.compare(password, String(user.password));
+
+        if (!passwordMatch) {
+          throw new Error("incorrect password");
+        }
+
+        return user;
       },
     }),
+  ],
+  adapter: PrismaAdapter(db),
+  session: {
+    strategy: "jwt",
+  },
+  secret: process.env.AUTH_SECRET,
+  callbacks: {
+    jwt: async function jwtCallback({ token, user }) {
+      if (user) token.id = user.id;
+      return token;
+    },
+    session: async function sessionCallback({ session, token }) {
+      session.user.id = token.id as string;
+      return session;
+    },
   },
 } satisfies NextAuthConfig;
